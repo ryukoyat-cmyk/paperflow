@@ -5,36 +5,41 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>논문이 술술, PaperFlow</title>
   <style>
-    :root { color-scheme: light; --ink:#171717; --muted:#737373; --line:#e5e5e5; --soft:#fafafa; }
+    :root { color-scheme: light; --ink:#171717; --muted:#737373; --line:#e5e5e5; --soft:#fafafa; --ok:#16794f; --bad:#b42318; }
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; display:flex; flex-direction:column; color:var(--ink); background:#fff; font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     header { width:min(1060px, calc(100% - 40px)); margin:0 auto; padding:30px 0; display:flex; align-items:center; justify-content:space-between; }
     .brand { display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.04em; }
     .logo { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; background:var(--ink); color:#fff; font-size:14px; }
     .badge { color:var(--muted); font-size:12px; }
-    main { flex:1; width:min(700px, calc(100% - 40px)); margin:64px auto 80px; }
+    main { flex:1; width:min(760px, calc(100% - 40px)); margin:64px auto 80px; }
     .intro { text-align:center; margin-bottom:32px; }
     h1 { margin:0 0 12px; font-size:clamp(28px, 5vw, 42px); letter-spacing:-.065em; }
     .intro p { margin:0; color:var(--muted); font-size:15px; line-height:1.7; }
     .card { border:1px solid var(--line); border-radius:24px; padding:28px; box-shadow:0 16px 45px rgba(0,0,0,.05); }
+    .card + .card { margin-top:24px; }
     .dropzone { min-height:245px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px dashed #b8b8b8; border-radius:17px; background:var(--soft); text-align:center; transition:.2s; }
     .dropzone.dragover { border-color:var(--ink); background:#f1f1f1; transform:scale(1.01); }
     .upload-icon { width:48px; height:48px; display:grid; place-items:center; margin-bottom:16px; border-radius:14px; background:var(--ink); color:#fff; font-size:23px; }
     .dropzone strong { font-size:17px; letter-spacing:-.03em; }
     .dropzone p { margin:8px 0 18px; color:var(--muted); font-size:13px; }
     input[type=file] { display:none; }
-    .secondary { cursor:pointer; border:1px solid var(--line); border-radius:9px; padding:10px 16px; color:var(--ink); background:#fff; font:inherit; font-size:13px; font-weight:700; }
+    .secondary { display:inline-block; cursor:pointer; border:1px solid var(--line); border-radius:9px; padding:10px 16px; color:var(--ink); background:#fff; font:inherit; font-size:13px; font-weight:700; }
+    .secondary:hover { background:var(--soft); }
     .file-info { display:none; align-items:center; justify-content:space-between; gap:14px; margin-top:18px; padding:14px 16px; border-radius:12px; background:#f5f5f5; font-size:13px; }
     .file-info.show { display:flex; }
     .file-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
     .file-size { flex:none; color:var(--muted); }
     .action { width:100%; cursor:pointer; margin-top:20px; border:0; border-radius:11px; padding:15px 18px; color:#fff; background:var(--ink); font:inherit; font-weight:800; letter-spacing:-.02em; transition:.2s; }
     .action:disabled { cursor:not-allowed; color:#aaa; background:#e7e7e7; }
-    .message { min-height:20px; margin:13px 0 0; color:#b42318; text-align:center; font-size:13px; }
+    .message { min-height:20px; margin:13px 0 0; color:var(--bad); text-align:center; font-size:13px; line-height:1.6; }
+    .message.ok { color:var(--ok); }
     .progress { display:none; margin-top:28px; padding-top:25px; border-top:1px solid var(--line); }
     .progress.show { display:block; }
     .progress-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; font-weight:800; font-size:14px; }
-    .progress-title span { color:var(--muted); font-size:12px; font-weight:500; }
+    .progress-title span:last-child { color:var(--muted); font-size:12px; font-weight:500; }
+    .bar { height:5px; margin-bottom:18px; border-radius:99px; background:#eee; overflow:hidden; }
+    .bar div { height:100%; width:0; border-radius:99px; background:var(--ink); transition:width .35s ease; }
     .steps { display:grid; gap:10px; }
     .step { display:flex; align-items:center; gap:12px; color:#aaa; font-size:13px; }
     .dot { width:24px; height:24px; display:grid; place-items:center; flex:none; border:1px solid #ddd; border-radius:50%; font-size:11px; }
@@ -42,8 +47,40 @@
     .step.active .dot { border-color:var(--ink); background:var(--ink); color:#fff; }
     .step.done { color:#555; }
     .step.done .dot { border-color:#555; color:#555; }
+    .step small { color:var(--muted); font-weight:400; }
+    .result { display:none; }
+    .result.show { display:block; }
+    .result-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:20px; }
+    .result-head h2 { margin:0; font-size:19px; letter-spacing:-.04em; }
+    .tools { display:flex; flex-wrap:wrap; gap:8px; }
+    .translation { max-height:60vh; overflow-y:auto; padding-right:6px; font-size:15px; line-height:1.85; letter-spacing:-.01em; }
+    .translation h3 { margin:26px 0 10px; font-size:16px; letter-spacing:-.03em; }
+    .translation h3:first-child { margin-top:0; }
+    .translation p { margin:0 0 14px; white-space:pre-wrap; }
+    details { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); font-size:13px; }
+    summary { cursor:pointer; font-weight:700; }
+    .glossary { width:100%; margin-top:14px; border-collapse:collapse; font-size:12.5px; }
+    .glossary th, .glossary td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; }
+    .glossary th { color:var(--muted); font-weight:600; }
+    .refs { margin-top:14px; max-height:240px; overflow-y:auto; color:var(--muted); font-size:12px; line-height:1.7; white-space:pre-wrap; }
     footer { padding:24px 20px 30px; color:#aaa; text-align:center; font-size:11px; }
-    @media (max-width:560px) { header { padding:22px 0; } .badge { display:none; } main { margin-top:38px; } .card { padding:16px; border-radius:19px; } .dropzone { min-height:220px; } }
+    @media (max-width:560px) {
+      header { padding:22px 0; } .badge { display:none; } main { margin-top:38px; }
+      .card { padding:16px; border-radius:19px; } .dropzone { min-height:220px; }
+      .translation { max-height:none; }
+    }
+    /* "PDF로 저장" prints only the translation, so the browser's own PDF engine
+       does the typesetting and Korean fonts embed correctly. */
+    @media print {
+      header, footer, .intro, .upload-card, .tools, details, .progress { display:none !important; }
+      body { background:#fff; }
+      main { width:auto; margin:0; }
+      .card { border:0; border-radius:0; padding:0; box-shadow:none; }
+      .result-head { margin-bottom:16px; border-bottom:1px solid #ccc; padding-bottom:8px; }
+      .translation { max-height:none; overflow:visible; font-size:11pt; line-height:1.7; }
+      .translation h3 { break-after:avoid; }
+      .translation p { orphans:2; widows:2; }
+    }
   </style>
 </head>
 <body>
@@ -55,10 +92,10 @@
   <main>
     <section class="intro">
       <h1>논문을 자연스러운 한국어로</h1>
-      <p>PDF를 업로드하면 두 번의 AI 번역과 교차검증을 거쳐<br />읽기 좋은 번역 PDF를 준비합니다.</p>
+      <p>PDF를 올리면 용어집을 먼저 만들고, 1차 번역과 2차 교차검증을 거쳐<br />읽기 좋은 한국어 논문으로 정리합니다.</p>
     </section>
 
-    <section class="card">
+    <section class="card upload-card">
       <div class="dropzone" id="dropzone">
         <div class="upload-icon">↑</div>
         <strong>PDF 논문을 업로드하세요</strong>
@@ -72,58 +109,39 @@
 
       <div class="progress" id="progress" aria-live="polite">
         <div class="progress-title"><span id="progressLabel">준비 중</span><span id="progressPercent">0%</span></div>
+        <div class="bar"><div id="progressBar"></div></div>
         <div class="steps">
-          <div class="step" data-step="1"><span class="dot">1</span><span>업로드 완료</span></div>
-          <div class="step" data-step="2"><span class="dot">2</span><span>AI 1차 번역 진행 중</span></div>
-          <div class="step" data-step="3"><span class="dot">3</span><span>AI 2차 교차검증 중</span></div>
-          <div class="step" data-step="4"><span class="dot">4</span><span>최종 PDF 생성 중</span></div>
+          <div class="step" data-step="extract"><span class="dot">1</span><span>PDF 텍스트 추출 <small data-detail="extract"></small></span></div>
+          <div class="step" data-step="glossary"><span class="dot">2</span><span>핵심 용어집 생성 <small data-detail="glossary"></small></span></div>
+          <div class="step" data-step="draft"><span class="dot">3</span><span>AI 1차 번역 <small data-detail="draft"></small></span></div>
+          <div class="step" data-step="review"><span class="dot">4</span><span>AI 2차 교차검증 <small data-detail="review"></small></span></div>
         </div>
       </div>
+    </section>
+
+    <section class="card result" id="result">
+      <div class="result-head">
+        <h2 id="resultTitle">번역 결과</h2>
+        <div class="tools">
+          <button class="secondary" id="copyButton" type="button">복사</button>
+          <button class="secondary" id="downloadButton" type="button">Markdown 저장</button>
+          <button class="secondary" id="printButton" type="button">PDF로 저장</button>
+        </div>
+      </div>
+      <div class="translation" id="translation"></div>
+      <details id="glossaryBox" hidden>
+        <summary>사용된 용어집</summary>
+        <table class="glossary"><thead><tr><th>English</th><th>한국어</th></tr></thead><tbody id="glossaryBody"></tbody></table>
+      </details>
+      <details id="refsBox" hidden>
+        <summary>참고문헌 (원문 유지)</summary>
+        <div class="refs" id="refsBody"></div>
+      </details>
     </section>
   </main>
 
   <footer>© 2026 박재윤. All rights reserved.</footer>
 
-  <script>
-    const MAX_SIZE = 100 * 1024 * 1024;
-    const fileInput = document.querySelector('#fileInput');
-    const dropzone = document.querySelector('#dropzone');
-    const fileInfo = document.querySelector('#fileInfo');
-    const fileName = document.querySelector('#fileName');
-    const fileSize = document.querySelector('#fileSize');
-    const message = document.querySelector('#message');
-    const translateButton = document.querySelector('#translateButton');
-    const progress = document.querySelector('#progress');
-    const progressLabel = document.querySelector('#progressLabel');
-    const progressPercent = document.querySelector('#progressPercent');
-    let selectedFile = null;
-
-    function formatSize(bytes) { return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`; }
-    function selectFile(file) {
-      message.textContent = ''; selectedFile = null; translateButton.disabled = true; fileInfo.classList.remove('show');
-      if (!file) return;
-      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { message.textContent = 'PDF 파일만 업로드할 수 있습니다.'; return; }
-      if (file.size > MAX_SIZE) { message.textContent = '파일 크기는 최대 100MB까지 가능합니다.'; return; }
-      selectedFile = file; fileName.textContent = file.name; fileSize.textContent = formatSize(file.size); fileInfo.classList.add('show'); translateButton.disabled = false;
-    }
-    fileInput.addEventListener('change', e => selectFile(e.target.files[0]));
-    ['dragenter','dragover'].forEach(type => dropzone.addEventListener(type, e => { e.preventDefault(); dropzone.classList.add('dragover'); }));
-    ['dragleave','drop'].forEach(type => dropzone.addEventListener(type, e => { e.preventDefault(); dropzone.classList.remove('dragover'); }));
-    dropzone.addEventListener('drop', e => selectFile(e.dataTransfer.files[0]));
-    translateButton.addEventListener('click', () => {
-      if (!selectedFile) return;
-      translateButton.disabled = true; progress.classList.add('show'); message.textContent = '';
-      const formData = new FormData(); formData.append('file', selectedFile);
-      const labels = ['업로드 완료', 'AI 1차 번역 진행 중', 'AI 2차 교차검증 중', '최종 PDF 생성 중', '번역이 완료되었습니다'];
-      let current = 0;
-      const run = () => {
-        document.querySelectorAll('.step').forEach((el, i) => { el.classList.toggle('active', i === current); el.classList.toggle('done', i < current); });
-        progressLabel.textContent = labels[current]; progressPercent.textContent = `${Math.min(100, current * 25)}%`;
-        if (current < 4) { current++; setTimeout(run, 900); } else { progressLabel.textContent = 'AI 번역을 요청하는 중'; progressPercent.textContent = '90%';
-          fetch('/.netlify/functions/translate', { method:'POST', body: formData }).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || '번역 작업을 시작하지 못했습니다.'); const poll = async () => { const statusResponse = await fetch(`/.netlify/functions/translate-status?jobId=${encodeURIComponent(data.jobId)}`); const status = await statusResponse.json(); if (!statusResponse.ok) throw new Error(status.error || '번역 상태를 확인하지 못했습니다.'); if (status.status === 'failed') throw new Error(status.error || '번역에 실패했습니다.'); if (status.status === 'completed') { progressLabel.textContent = '번역이 완료되었습니다'; progressPercent.textContent = '100%'; document.querySelectorAll('.step').forEach(el => el.classList.add('done')); message.style.color = '#16794f'; message.textContent = status.summary || '두 AI의 번역 결과를 교차검증했습니다.'; return; } progressLabel.textContent = status.status === 'processing' ? 'AI가 논문을 번역하는 중' : '번역 작업을 준비하는 중'; progressPercent.textContent = `${Math.max(10, status.progress || 10)}%`; setTimeout(poll, 2500); }; await poll(); }).catch(error => { progress.classList.remove('show'); translateButton.disabled = false; message.style.color = '#b42318'; message.textContent = error.message; }); }
-      };
-      run();
-    });
-  </script>
+  <script type="module" src="./assets/app.js"></script>
 </body>
 </html>

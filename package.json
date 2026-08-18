@@ -1,7 +1,7 @@
 {
+  "name": "paperflow",
   "private": true,
   "dependencies": {
-    "@netlify/blobs": "^9.1.0",
-    "pdf-parse": "^1.1.1"
+    "@netlify/blobs": "^9.1.0"
   }
 }

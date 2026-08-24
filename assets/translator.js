@@ -10,7 +10,6 @@ const ENDPOINT = '/.netlify/functions/translate';
 const CHUNK_TARGET = 3500;   // characters of English per model call
 const GLOSSARY_SAMPLE = 20000;
 const CONCURRENCY = 3;
-const REVIEW_DEADLINE_MS = 8 * 60 * 1000;
 
 class TruncatedError extends Error {}
 
@@ -182,10 +181,10 @@ const tail = (text, n = 500) => (text ? text.slice(-n) : '');
 
 /**
  * @param {{body:string, references:string}} document
- * @param {{onPhase?:Function, onProgress?:Function, onPartial?:Function, signal?:AbortSignal}} hooks
+ * @param {{onPhase?:Function, onProgress?:Function, onPartial?:Function, signal?:AbortSignal,review?:boolean}} hooks
  */
 export async function translateDocument(document, hooks = {}) {
-  const { onPhase, onProgress, onPartial, signal } = hooks;
+  const { onPhase, onProgress, onPartial, signal, review = true } = hooks;
   const started = Date.now();
 
   onPhase?.('glossary');
@@ -213,17 +212,22 @@ export async function translateDocument(document, hooks = {}) {
     return result;
   });
 
+  if (!review) {
+    return {
+      translation: drafts.join('\n\n'),
+      references: document.references,
+      glossary,
+      chunks: chunks.length,
+      skippedReview: chunks.length,
+      reviewMode: 'draft-only',
+      elapsedMs: Date.now() - started,
+    };
+  }
+
   onPhase?.('review');
   let reviewed = 0;
   let skippedReview = 0;
   const finals = await pool(chunks, CONCURRENCY, async (chunk, index) => {
-    // Long documents keep the verified draft rather than stalling at the deadline.
-    if (Date.now() - started > REVIEW_DEADLINE_MS) {
-      skippedReview += 1;
-      reviewed += 1;
-      onProgress?.(reviewed, chunks.length);
-      return drafts[index];
-    }
     let result = drafts[index];
     try {
       result = await translateChunk(
@@ -245,6 +249,7 @@ export async function translateDocument(document, hooks = {}) {
     glossary,
     chunks: chunks.length,
     skippedReview,
+    reviewMode: 'reviewed',
     elapsedMs: Date.now() - started,
   };
 }

@@ -43,7 +43,7 @@ function wrapText(text, font, size, width) {
   return lines.length ? lines : [''];
 }
 
-export async function createTranslationPdf({ title, translation }) {
+export async function createTranslationPdf({ title, translation, notice = '' }) {
   const { PDFLib, fontkit } = await loadPdfTools();
   const [regularBytes, boldBytes] = await Promise.all([
     bytes('../vendor/pretendard/Pretendard-Regular.ttf'),
@@ -72,6 +72,7 @@ export async function createTranslationPdf({ title, translation }) {
     y -= gap;
   };
   drawBlock(title, { font: bold, size: 20, leading: 28, gap: 22 });
+  if (notice) drawBlock(notice, { font: regular, size: 8.5, leading: 13, gap: 14 });
   const blocks = translation.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
   for (const block of blocks) {
     if (block.startsWith('## ')) drawBlock(block.slice(3), { font: bold, size: 13, leading: 20, gap: 8 });

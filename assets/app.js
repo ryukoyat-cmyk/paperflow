@@ -1,5 +1,6 @@
 import { extractPdfText, splitReferences } from './pdf-text.js';
-import { translateDocument } from './translator.js';
+import { buildChunks, translateDocument } from './translator.js';
+import { getDocumentPolicy, MAX_BODY_CHARS } from './document-policy.js';
 import { terminateOcr } from './ocr.js';
 import { createResultsZip, createTranslationPdf, downloadBlob } from './export.js';
 import { clearQueue, deleteItem, hasStorageFor, loadQueue, saveItem } from './queue-store.js';
@@ -7,7 +8,6 @@ import { clearQueue, deleteItem, hasStorageFor, loadQueue, saveItem } from './qu
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 500 * 1024 * 1024;
 const MAX_FILES = 20;
-const MAX_CHARS = 300000;
 const MAX_RETRIES = 2;
 const ACTIVE = new Set(['extract', 'ocr', 'glossary', 'draft', 'review', 'pdf']);
 const LABELS = { queued:'대기', extract:'텍스트 추출', ocr:'OCR', glossary:'용어집', draft:'1차 번역', review:'교차검증', pdf:'PDF 생성', completed:'완료', failed:'실패', cancelled:'취소' };
@@ -57,8 +57,9 @@ function render() {
     if (item.pdfBlob) tools.push(`<button class="mini" data-action="save" data-id="${item.id}">PDF 저장</button>`);
     if (item.status === 'failed' || item.status === 'cancelled') tools.push(`<button class="mini" data-action="retry" data-id="${item.id}">재시도</button>`);
     tools.push(`<button class="mini" data-action="delete" data-id="${item.id}">삭제</button>`);
+    const mode = item.reviewMode === 'draft-only' ? ' · 1차 번역' : item.reviewMode === 'reviewed' ? ' · 교차검증' : '';
     return `<article class="queue-item ${ACTIVE.has(item.status) ? 'active' : ''} ${item.status === 'failed' ? 'failed' : ''}">
-      <div class="item-top"><span class="item-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span><span class="item-status">${LABELS[item.status] || item.status}${item.attempt ? ` · ${item.attempt}차` : ''}</span></div>
+      <div class="item-top"><span class="item-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span><span class="item-status">${LABELS[item.status] || item.status}${mode}${item.attempt ? ` · ${item.attempt}차` : ''}</span></div>
       <div class="item-bar"><div style="width:${item.progress || 0}%"></div></div>
       ${item.error ? `<div class="item-error">${escapeHtml(item.error)}</div>` : ''}<div class="item-tools">${tools.join('')}</div></article>`;
   }).join('');
@@ -79,7 +80,7 @@ async function addFiles(fileList) {
     if (file.size > MAX_FILE_BYTES) { messages.push(`${file.name}: 100MB를 초과합니다.`); continue; }
     if (totalBytes() + file.size > MAX_TOTAL_BYTES) { messages.push(`${file.name}: 전체 500MB 제한을 초과합니다.`); continue; }
     if (!(await hasStorageFor(file.size))) { messages.push(`${file.name}: 브라우저 저장 공간이 부족합니다.`); continue; }
-    const item = { id: crypto.randomUUID(), order: Date.now() + queue.length, name:file.name, size:file.size, file, status:'queued', phase:'queued', progress:0, attempt:0, error:'', pdfBlob:null, outputName:`${baseName(file.name)}-ko.pdf`, pageMeta:[], warnings:[] };
+    const item = { id: crypto.randomUUID(), order: Date.now() + queue.length, name:file.name, size:file.size, file, status:'queued', phase:'queued', progress:0, attempt:0, error:'', pdfBlob:null, outputName:`${baseName(file.name)}-ko.pdf`, pageMeta:[], warnings:[], bodyChars:0, chunks:0, reviewMode:'' };
     queue.push(item);
     await persist(item);
   }
@@ -116,25 +117,32 @@ async function processFile(item) {
       onPhase:(phase) => showProgress(phase, 0, 1),
       onProgress:(done, total, meta) => showProgress(meta?.source === 'ocr' ? 'ocr' : currentPhase, done, total, `${Math.min(total, Math.ceil(done))}/${total}페이지`),
     });
-    if (extracted.chars < 200) throw new Error('텍스트와 OCR 결과가 200자 미만입니다. 스캔 품질을 확인해주세요.');
-    if (extracted.chars > MAX_CHARS) throw new Error(`본문이 최대 ${MAX_CHARS.toLocaleString()}자를 초과합니다.`);
     item.pageMeta = extracted.pageMeta;
     item.warnings = extracted.warnings;
     const document_ = splitReferences(extracted.text);
+    if (document_.body.length < 200) throw new Error('번역할 본문이 200자 미만입니다. 스캔 품질을 확인해주세요.');
+    const policy = getDocumentPolicy(document_.body.length);
+    if (!policy.allowed) throw new Error(`참고문헌을 제외한 본문이 최대 ${MAX_BODY_CHARS.toLocaleString()}자를 초과합니다. 장이나 파일을 나눠주세요.`);
+    const chunks = buildChunks(document_.body).length;
+    await updateItem(item, { bodyChars:policy.bodyChars, chunks, reviewMode:policy.mode });
+    const modeText = policy.review ? '1차 번역과 2차 교차검증' : '장문 문서이므로 1차 번역만';
+    setMessage(`${item.name}: 본문 ${policy.bodyChars.toLocaleString()}자 · 약 ${chunks}구간 · ${modeText} 수행합니다.`, 'ok');
     const result = await translateDocument(document_, {
       signal:controller.signal,
+      review:policy.review,
       onPhase:(phase) => showProgress(phase, 0, 1),
       onProgress:(done, total) => showProgress(currentPhase, done, total, `${done}/${total}구간`),
       onPartial:(partial) => { previewId = item.id; el.result.classList.add('show'); el.resultTitle.textContent = `${baseName(item.name)} · 번역 중`; el.translation.innerHTML = renderMarkdown(partial); },
     });
     showProgress('pdf', 0, 1);
-    const pdfBlob = await createTranslationPdf({ title:baseName(item.name), translation:result.translation });
+    const notice = policy.review ? '' : '장문 문서로 분류되어 1차 번역만 수행한 결과입니다.';
+    const pdfBlob = await createTranslationPdf({ title:baseName(item.name), translation:result.translation, notice });
     item.pdfBlob = pdfBlob;
     await updateItem(item, { status:'completed', phase:'completed', progress:100, error:'' });
     previewId = item.id;
     el.result.classList.add('show'); el.resultTitle.textContent = `${baseName(item.name)} · 번역 결과`; el.translation.innerHTML = renderMarkdown(result.translation);
     downloadBlob(item.outputName, pdfBlob);
-    setMessage(`${item.name} 번역과 PDF 생성을 완료했습니다. 자동 저장이 보이지 않으면 작업 목록의 PDF 저장을 누르세요.`, 'ok');
+    setMessage(`${item.name} ${policy.review ? '번역·교차검증' : '1차 번역'}과 PDF 생성을 완료했습니다. 자동 저장이 보이지 않으면 작업 목록의 PDF 저장을 누르세요.`, 'ok');
   } finally {
     controller = null;
     currentId = null;

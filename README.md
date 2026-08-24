@@ -7,13 +7,14 @@
 ```
 브라우저                                    Netlify Function
 ────────                                    ────────────────
-1. PDF 선택
-2. pdf.js로 텍스트 추출 (로컬)
-3. 정리·구간 분할 (로컬)
-4. 용어집 요청           ──────────────▶  task: glossary  ──▶ OpenAI
-5. 구간별 1차 번역       ──────────────▶  task: draft     ──▶ OpenAI
-6. 구간별 2차 교차검증   ──────────────▶  task: review    ──▶ OpenAI
-7. 결과 표시 / Markdown·PDF 저장
+1. PDF 작업 목록 선택 (최대 20개 / 합계 500MB)
+2. pdf.js로 페이지별 텍스트 추출 (로컬)
+3. 텍스트가 부족한 페이지만 영어 OCR (로컬)
+4. 정리·구간 분할 (로컬)
+5. 용어집 요청           ──────────────▶  task: glossary  ──▶ OpenAI
+6. 구간별 1차 번역       ──────────────▶  task: draft     ──▶ OpenAI
+7. 구간별 2차 교차검증   ──────────────▶  task: review    ──▶ OpenAI
+8. Pretendard 번역 PDF 자동 저장 / 전체 ZIP 저장
 ```
 
 **텍스트 추출을 브라우저에서 하는 이유.** Netlify 함수의 요청 본문 상한은 6MB이므로
@@ -28,10 +29,13 @@
 
 | 경로 | 역할 |
 | --- | --- |
-| `index.html` | 화면과 스타일 (`@media print`가 "PDF로 저장"을 담당) |
-| `assets/pdf-text.js` | PDF → 정리된 텍스트. 단 나누기, 문단 복원, 머리말·페이지번호 제거 |
+| `index.html` | 다중 파일 작업 목록과 번역 결과 화면 |
+| `assets/pdf-text.js` | PDF/OCR → 정리된 텍스트. 단 나누기, 문단 복원, 머리말·페이지번호 제거 |
 | `assets/translator.js` | 용어집 → 1차 번역 → 교차검증 오케스트레이션 |
 | `assets/app.js` | 파일 선택, 진행 표시, 결과 렌더링 |
+| `assets/ocr.js` | 저품질 페이지의 브라우저 영어 OCR |
+| `assets/export.js` | Pretendard PDF 및 ZIP 생성 |
+| `assets/queue-store.js` | IndexedDB 작업 목록과 결과 복구 |
 | `netlify/functions/translate.mjs` | OpenAI 호출. 프롬프트는 전부 서버에 있다 |
 | `vendor/pdfjs/` | pdf.js 6.2.108 브라우저 빌드 (번들러 없이 직접 로드) |
 
@@ -65,12 +69,14 @@
 
 ## 한계
 
-- 스캔한 이미지 PDF는 지원하지 않는다(OCR 없음). 추출 글자 수가 200자 미만이면 안내한다.
+- 스캔한 이미지 PDF는 브라우저에서 페이지별 영어 OCR을 수행하므로 일반 PDF보다 오래 걸린다.
 - 본문 30만 자를 넘으면 장을 나눠 올려야 한다.
 - 표와 그림 내부의 텍스트는 문단으로 섞여 들어올 수 있다.
 - 줄바꿈 하이픈이 진짜 복합어 하이픈이고 문서에 한 번만 등장하면 하이픈이 사라질 수 있다.
 - 인증이 없으므로 `RATE_LIMIT_PER_MINUTE`만으로 API 비용을 막는다. 공개 운영 시에는
   별도 인증을 붙이는 편이 안전하다.
+- 브라우저가 연속 다운로드를 차단할 수 있다. 완료 PDF는 IndexedDB에 유지되며 작업 목록의
+  `PDF 저장` 또는 `전체 ZIP 저장`으로 회수할 수 있다.
 
 ## 개발
 

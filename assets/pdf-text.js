@@ -6,6 +6,7 @@
 // `pdf-parse` dependency, whose debug branch breaks once esbuild bundles it.
 
 import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
+import { canvasHasInk, recognisePage } from './ocr.js';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
 
@@ -85,7 +86,24 @@ function withColumnBounds(lines) {
   return lines.map((line) => ({ ...line, colLeft, colRight }));
 }
 
-async function pageLines(page) {
+function textQuality(lines) {
+  const text = lines.map((line) => line.text).join(' ').trim();
+  const valid = (text.match(/[A-Za-z0-9]/g) || []).length;
+  return { chars: text.length, ratio: text.length ? valid / text.length : 0 };
+}
+
+async function renderForOcr(page) {
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.min(2.5, 3000 / Math.max(base.width, base.height));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil(viewport.width));
+  canvas.height = Math.max(1, Math.ceil(viewport.height));
+  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  return canvas;
+}
+
+async function pageLines(page, { signal, onPhase, onOcrProgress } = {}) {
   const viewport = page.getViewport({ scale: 1 });
   const content = await page.getTextContent();
   const items = content.items
@@ -97,20 +115,39 @@ async function pageLines(page) {
       width: it.width || 0,
       height: Math.abs(it.transform[3]) || it.height || 10,
     }));
-  if (!items.length) return [];
+  let textLines = [];
+  if (items.length) {
+    const split = detectColumnSplit(items, viewport.width);
+    if (split === null) textLines = withColumnBounds(itemsToLines(items));
+    else {
+      const spanning = items.filter((it) => it.x < split && it.x + it.width > split);
+      const left = items.filter((it) => it.x + it.width <= split);
+      const right = items.filter((it) => it.x >= split);
+      textLines = [
+        ...withColumnBounds(itemsToLines(spanning)),
+        ...withColumnBounds(itemsToLines(left)),
+        ...withColumnBounds(itemsToLines(right)),
+      ];
+    }
+  }
+  const quality = textQuality(textLines);
+  if (quality.chars >= 40 && quality.ratio >= 0.6) return { lines: textLines, source: 'text', chars: quality.chars };
 
-  const split = detectColumnSplit(items, viewport.width);
-  if (split === null) return withColumnBounds(itemsToLines(items));
-
-  // Full-width items (titles, spanning figures) belong above both columns.
-  const spanning = items.filter((it) => it.x < split && it.x + it.width > split);
-  const left = items.filter((it) => it.x + it.width <= split);
-  const right = items.filter((it) => it.x >= split);
-  return [
-    ...withColumnBounds(itemsToLines(spanning)),
-    ...withColumnBounds(itemsToLines(left)),
-    ...withColumnBounds(itemsToLines(right)),
-  ];
+  if (signal?.aborted) throw new DOMException('텍스트 추출을 취소했습니다.', 'AbortError');
+  const canvas = await renderForOcr(page);
+  try {
+    if (!canvasHasInk(canvas)) return { lines: textLines, source: 'text', chars: quality.chars, warning: '빈 페이지로 판단해 OCR을 건너뛰었습니다.' };
+    onPhase?.('ocr');
+    const ocrLines = withColumnBounds(await recognisePage(canvas, { signal, onProgress: onOcrProgress }));
+    const ocrQuality = textQuality(ocrLines);
+    if (ocrQuality.chars > quality.chars && ocrQuality.ratio >= 0.45) {
+      return { lines: ocrLines, source: 'ocr', chars: ocrQuality.chars };
+    }
+    return { lines: textLines, source: 'text', chars: quality.chars, warning: 'OCR 결과가 기존 텍스트보다 좋지 않아 원본 추출을 유지했습니다.' };
+  } finally {
+    canvas.width = 1;
+    canvas.height = 1;
+  }
 }
 
 // A running head or footer repeats across pages; a page number is bare digits.
@@ -261,10 +298,13 @@ function splitLongParagraphs(paragraphs) {
 
 /**
  * @param {ArrayBuffer} data raw PDF bytes
- * @param {(done:number,total:number)=>void} [onProgress]
- * @returns {Promise<{text:string,pages:number,chars:number}>}
+ * @param {{signal?:AbortSignal,onProgress?:Function,onPhase?:Function}|Function} [options]
+ * @returns {Promise<{text:string,pages:number,chars:number,pageMeta:Array,warnings:Array}>}
  */
-export async function extractPdfText(data, onProgress) {
+export async function extractPdfText(data, options = {}) {
+  const { signal, onProgress, onPhase } = typeof options === 'function'
+    ? { onProgress: options }
+    : options;
   const loadingTask = pdfjs.getDocument({
     data,
     // Papers routinely embed CJK/maths fonts; without these pdf.js drops glyphs.
@@ -274,15 +314,26 @@ export async function extractPdfText(data, onProgress) {
   const doc = await loadingTask.promise;
 
   const pages = [];
+  const pageMeta = [];
+  const warnings = [];
   try {
     for (let n = 1; n <= doc.numPages; n += 1) {
+      if (signal?.aborted) throw new DOMException('텍스트 추출을 취소했습니다.', 'AbortError');
       const page = await doc.getPage(n);
       try {
-        pages.push(await pageLines(page));
+        onPhase?.('extract');
+        const result = await pageLines(page, {
+          signal,
+          onPhase,
+          onOcrProgress: (event) => onProgress?.(n - 1 + (event.progress || 0), doc.numPages, { page: n, source: 'ocr' }),
+        });
+        pages.push(result.lines);
+        pageMeta.push({ page: n, source: result.source, chars: result.chars });
+        if (result.warning) warnings.push(`페이지 ${n}: ${result.warning}`);
       } finally {
         page.cleanup();
       }
-      onProgress?.(n, doc.numPages);
+      onProgress?.(n, doc.numPages, pageMeta[pageMeta.length - 1]);
     }
   } finally {
     await loadingTask.destroy();
@@ -292,7 +343,7 @@ export async function extractPdfText(data, onProgress) {
     .flat()
     .map((line) => ({ ...line, text: normalise(line.text) }))
     .filter((line) => line.text);
-  if (!lines.length) return { text: '', pages: doc.numPages, chars: 0 };
+  if (!lines.length) return { text: '', pages: doc.numPages, chars: 0, pageMeta, warnings };
 
   // Body size is the size most of the text is set in, weighted by how much text
   // each line carries, so headings and captions cannot skew it.
@@ -313,7 +364,7 @@ export async function extractPdfText(data, onProgress) {
     .filter(Boolean);
 
   const text = splitLongParagraphs(paragraphs).join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { text, pages: doc.numPages, chars: text.length };
+  return { text, pages: doc.numPages, chars: text.length, pageMeta, warnings };
 }
 
 /** Splits off the reference list, which should be kept verbatim rather than translated. */

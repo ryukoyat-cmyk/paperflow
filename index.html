@@ -5,143 +5,49 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>논문이 술술, PaperFlow</title>
   <style>
-    :root { color-scheme: light; --ink:#171717; --muted:#737373; --line:#e5e5e5; --soft:#fafafa; --ok:#16794f; --bad:#b42318; }
-    * { box-sizing: border-box; }
-    body { margin:0; min-height:100vh; display:flex; flex-direction:column; color:var(--ink); background:#fff; font-family: Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    header { width:min(1060px, calc(100% - 40px)); margin:0 auto; padding:30px 0; display:flex; align-items:center; justify-content:space-between; }
-    .brand { display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.04em; }
-    .logo { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; background:var(--ink); color:#fff; font-size:14px; }
-    .badge { color:var(--muted); font-size:12px; }
-    main { flex:1; width:min(760px, calc(100% - 40px)); margin:64px auto 80px; }
-    .intro { text-align:center; margin-bottom:32px; }
-    h1 { margin:0 0 12px; font-size:clamp(28px, 5vw, 42px); letter-spacing:-.065em; }
-    .intro p { margin:0; color:var(--muted); font-size:15px; line-height:1.7; }
-    .card { border:1px solid var(--line); border-radius:24px; padding:28px; box-shadow:0 16px 45px rgba(0,0,0,.05); }
-    .card + .card { margin-top:24px; }
-    .dropzone { min-height:245px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px dashed #b8b8b8; border-radius:17px; background:var(--soft); text-align:center; transition:.2s; }
-    .dropzone.dragover { border-color:var(--ink); background:#f1f1f1; transform:scale(1.01); }
-    .upload-icon { width:48px; height:48px; display:grid; place-items:center; margin-bottom:16px; border-radius:14px; background:var(--ink); color:#fff; font-size:23px; }
-    .dropzone strong { font-size:17px; letter-spacing:-.03em; }
-    .dropzone p { margin:8px 0 18px; color:var(--muted); font-size:13px; }
-    input[type=file] { display:none; }
-    .secondary { display:inline-block; cursor:pointer; border:1px solid var(--line); border-radius:9px; padding:10px 16px; color:var(--ink); background:#fff; font:inherit; font-size:13px; font-weight:700; }
-    .secondary:hover { background:var(--soft); }
-    .file-info { display:none; align-items:center; justify-content:space-between; gap:14px; margin-top:18px; padding:14px 16px; border-radius:12px; background:#f5f5f5; font-size:13px; }
-    .file-info.show { display:flex; }
-    .file-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
-    .file-size { flex:none; color:var(--muted); }
-    .action { width:100%; cursor:pointer; margin-top:20px; border:0; border-radius:11px; padding:15px 18px; color:#fff; background:var(--ink); font:inherit; font-weight:800; letter-spacing:-.02em; transition:.2s; }
-    .action:disabled { cursor:not-allowed; color:#aaa; background:#e7e7e7; }
-    .message { min-height:20px; margin:13px 0 0; color:var(--bad); text-align:center; font-size:13px; line-height:1.6; }
-    .message.ok { color:var(--ok); }
-    .progress { display:none; margin-top:28px; padding-top:25px; border-top:1px solid var(--line); }
-    .progress.show { display:block; }
-    .progress-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; font-weight:800; font-size:14px; }
-    .progress-title span:last-child { color:var(--muted); font-size:12px; font-weight:500; }
-    .bar { height:5px; margin-bottom:18px; border-radius:99px; background:#eee; overflow:hidden; }
-    .bar div { height:100%; width:0; border-radius:99px; background:var(--ink); transition:width .35s ease; }
-    .steps { display:grid; gap:10px; }
-    .step { display:flex; align-items:center; gap:12px; color:#aaa; font-size:13px; }
-    .dot { width:24px; height:24px; display:grid; place-items:center; flex:none; border:1px solid #ddd; border-radius:50%; font-size:11px; }
-    .step.active { color:var(--ink); font-weight:700; }
-    .step.active .dot { border-color:var(--ink); background:var(--ink); color:#fff; }
-    .step.done { color:#555; }
-    .step.done .dot { border-color:#555; color:#555; }
-    .step small { color:var(--muted); font-weight:400; }
-    .result { display:none; }
-    .result.show { display:block; }
-    .result-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin-bottom:20px; }
-    .result-head h2 { margin:0; font-size:19px; letter-spacing:-.04em; }
-    .tools { display:flex; flex-wrap:wrap; gap:8px; }
-    .translation { max-height:60vh; overflow-y:auto; padding-right:6px; font-size:15px; line-height:1.85; letter-spacing:-.01em; }
-    .translation h3 { margin:26px 0 10px; font-size:16px; letter-spacing:-.03em; }
-    .translation h3:first-child { margin-top:0; }
-    .translation p { margin:0 0 14px; white-space:pre-wrap; }
-    details { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); font-size:13px; }
-    summary { cursor:pointer; font-weight:700; }
-    .glossary { width:100%; margin-top:14px; border-collapse:collapse; font-size:12.5px; }
-    .glossary th, .glossary td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; }
-    .glossary th { color:var(--muted); font-weight:600; }
-    .refs { margin-top:14px; max-height:240px; overflow-y:auto; color:var(--muted); font-size:12px; line-height:1.7; white-space:pre-wrap; }
-    footer { padding:24px 20px 30px; color:#aaa; text-align:center; font-size:11px; }
-    @media (max-width:560px) {
-      header { padding:22px 0; } .badge { display:none; } main { margin-top:38px; }
-      .card { padding:16px; border-radius:19px; } .dropzone { min-height:220px; }
-      .translation { max-height:none; }
-    }
-    /* "PDF로 저장" prints only the translation, so the browser's own PDF engine
-       does the typesetting and Korean fonts embed correctly. */
-    @media print {
-      header, footer, .intro, .upload-card, .tools, details, .progress { display:none !important; }
-      body { background:#fff; }
-      main { width:auto; margin:0; }
-      .card { border:0; border-radius:0; padding:0; box-shadow:none; }
-      .result-head { margin-bottom:16px; border-bottom:1px solid #ccc; padding-bottom:8px; }
-      .translation { max-height:none; overflow:visible; font-size:11pt; line-height:1.7; }
-      .translation h3 { break-after:avoid; }
-      .translation p { orphans:2; widows:2; }
-    }
+    :root { color-scheme:light; --ink:#171717; --muted:#737373; --line:#e5e5e5; --soft:#fafafa; --ok:#16794f; --bad:#b42318; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:#fff; font-family:Pretendard,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; } button { font:inherit; }
+    header { width:min(1240px,calc(100% - 40px)); margin:auto; padding:28px 0; display:flex; justify-content:space-between; align-items:center; }
+    .brand { display:flex; gap:10px; align-items:center; font-weight:800; letter-spacing:-.04em; } .logo { width:30px; height:30px; display:grid; place-items:center; color:#fff; background:var(--ink); border-radius:9px; }
+    .badge,.muted { color:var(--muted); } .layout { width:min(1240px,calc(100% - 40px)); margin:34px auto 80px; display:grid; grid-template-columns:minmax(0,760px) 380px; gap:28px; align-items:start; }
+    .intro { text-align:center; margin:0 0 28px; } h1 { margin:0 0 12px; font-size:clamp(28px,5vw,42px); letter-spacing:-.065em; } .intro p { margin:0; color:var(--muted); font-size:15px; line-height:1.7; }
+    .card { border:1px solid var(--line); border-radius:22px; padding:26px; box-shadow:0 16px 45px rgba(0,0,0,.05); } .card + .card { margin-top:24px; }
+    .dropzone { min-height:230px; display:flex; flex-direction:column; align-items:center; justify-content:center; border:1px dashed #b8b8b8; border-radius:17px; background:var(--soft); text-align:center; transition:.2s; }
+    .dropzone.dragover { border-color:var(--ink); background:#f1f1f1; transform:scale(1.01); } .upload-icon { width:48px; height:48px; display:grid; place-items:center; margin-bottom:16px; border-radius:14px; background:var(--ink); color:#fff; font-size:23px; }
+    .dropzone strong { font-size:17px; } .dropzone p { margin:8px 0 18px; color:var(--muted); font-size:13px; } input[type=file] { display:none; }
+    .secondary,.mini { cursor:pointer; border:1px solid var(--line); border-radius:9px; color:var(--ink); background:#fff; font-weight:700; } .secondary { padding:10px 16px; font-size:13px; } .mini { padding:6px 8px; font-size:11px; }
+    .secondary:hover,.mini:hover { background:var(--soft); } .action { width:100%; cursor:pointer; margin-top:14px; border:0; border-radius:11px; padding:14px 18px; color:#fff; background:var(--ink); font-weight:800; } .action:disabled { cursor:not-allowed; color:#aaa; background:#e7e7e7; }
+    .message { min-height:20px; margin:13px 0 0; color:var(--bad); text-align:center; font-size:13px; line-height:1.6; } .message.ok { color:var(--ok); }
+    .progress { display:none; margin-top:24px; padding-top:22px; border-top:1px solid var(--line); } .progress.show { display:block; } .progress-title,.queue-head,.queue-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .progress-title { margin-bottom:12px; font-size:14px; font-weight:800; } .bar,.item-bar { border-radius:99px; background:#eee; overflow:hidden; } .bar { height:6px; } .bar div,.item-bar div { height:100%; background:var(--ink); transition:width .3s; }
+    .queue-panel { position:sticky; top:22px; max-height:calc(100vh - 44px); display:flex; flex-direction:column; } .queue-head h2 { margin:0; font-size:18px; } .queue-summary { margin:12px 0; font-size:12px; color:var(--muted); } .queue-actions { display:flex; flex-wrap:wrap; gap:7px; }
+    .queue-list { min-height:120px; margin-top:14px; overflow:auto; display:grid; gap:10px; } .empty { margin:auto; padding:26px; color:#aaa; text-align:center; font-size:13px; }
+    .queue-item { border:1px solid var(--line); border-radius:12px; padding:12px; background:#fff; } .queue-item.active { border-color:#9db3ef; background:#f8faff; } .queue-item.failed { border-color:#efb5af; }
+    .item-top { display:flex; justify-content:space-between; gap:10px; } .item-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; font-weight:750; } .item-status { flex:none; color:var(--muted); font-size:11px; }
+    .item-bar { height:3px; margin:9px 0; } .item-error { color:var(--bad); font-size:11px; line-height:1.4; } .item-tools { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:5px; margin-top:8px; }
+    .result { display:none; } .result.show { display:block; } .result-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; } .result-head h2 { margin:0; font-size:19px; }
+    .translation { max-height:60vh; overflow:auto; font-size:15px; line-height:1.85; } .translation h3 { margin:24px 0 9px; font-size:16px; } .translation p { margin:0 0 14px; white-space:pre-wrap; } footer { padding:24px; color:#aaa; text-align:center; font-size:11px; }
+    @media (max-width:960px) { .layout { grid-template-columns:1fr; } .queue-panel { position:static; max-height:none; order:2; } .queue-list { max-height:480px; } } @media (max-width:560px) { header,.layout { width:calc(100% - 24px); } .layout { margin-top:20px; } .badge { display:none; } .card { padding:16px; border-radius:18px; } }
   </style>
 </head>
 <body>
-  <header>
-    <div class="brand"><div class="logo">P</div><span>논문이 술술, PaperFlow</span></div>
-    <div class="badge">English → 한국어</div>
-  </header>
-
-  <main>
-    <section class="intro">
-      <h1>논문을 자연스러운 한국어로</h1>
-      <p>PDF를 올리면 용어집을 먼저 만들고, 1차 번역과 2차 교차검증을 거쳐<br />읽기 좋은 한국어 논문으로 정리합니다.</p>
-    </section>
-
-    <section class="card upload-card">
-      <div class="dropzone" id="dropzone">
-        <div class="upload-icon">↑</div>
-        <strong>PDF 논문을 업로드하세요</strong>
-        <p>파일을 이곳에 끌어놓거나 선택해주세요 · 최대 100MB</p>
-        <label class="secondary" for="fileInput">파일 선택</label>
-        <input id="fileInput" type="file" accept="application/pdf,.pdf" />
-      </div>
-      <div class="file-info" id="fileInfo"><span class="file-name" id="fileName"></span><span class="file-size" id="fileSize"></span></div>
-      <p class="message" id="message" aria-live="polite"></p>
-      <button class="action" id="translateButton" disabled>번역 시작하기</button>
-
-      <div class="progress" id="progress" aria-live="polite">
-        <div class="progress-title"><span id="progressLabel">준비 중</span><span id="progressPercent">0%</span></div>
-        <div class="bar"><div id="progressBar"></div></div>
-        <div class="steps">
-          <div class="step" data-step="extract"><span class="dot">1</span><span>PDF 텍스트 추출 <small data-detail="extract"></small></span></div>
-          <div class="step" data-step="glossary"><span class="dot">2</span><span>핵심 용어집 생성 <small data-detail="glossary"></small></span></div>
-          <div class="step" data-step="draft"><span class="dot">3</span><span>AI 1차 번역 <small data-detail="draft"></small></span></div>
-          <div class="step" data-step="review"><span class="dot">4</span><span>AI 2차 교차검증 <small data-detail="review"></small></span></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card result" id="result">
-      <div class="result-head">
-        <h2 id="resultTitle">번역 결과</h2>
-        <div class="tools">
-          <button class="secondary" id="copyButton" type="button">복사</button>
-          <button class="secondary" id="downloadButton" type="button">Markdown 저장</button>
-          <button class="secondary" id="printButton" type="button">PDF로 저장</button>
-        </div>
-      </div>
-      <div class="translation" id="translation"></div>
-      <details id="glossaryBox" hidden>
-        <summary>사용된 용어집</summary>
-        <table class="glossary"><thead><tr><th>English</th><th>한국어</th></tr></thead><tbody id="glossaryBody"></tbody></table>
-      </details>
-      <details id="refsBox" hidden>
-        <summary>참고문헌 (원문 유지)</summary>
-        <div class="refs" id="refsBody"></div>
-      </details>
-    </section>
-  </main>
-
-  <footer>© 2026 박재윤. All rights reserved.</footer>
-
-  <script type="module" src="./assets/app.js"></script>
+  <header><div class="brand"><div class="logo">P</div><span>논문이 술술, PaperFlow</span></div><div class="badge">English → 한국어</div></header>
+  <div class="layout">
+    <main>
+      <section class="intro"><h1>논문을 자연스러운 한국어로</h1><p>여러 PDF를 등록하면 한 파일씩 OCR·번역하고<br />Pretendard가 적용된 PDF로 자동 저장합니다.</p></section>
+      <section class="card upload-card">
+        <div class="dropzone" id="dropzone"><div class="upload-icon">↑</div><strong>PDF 논문을 업로드하세요</strong><p>여러 파일 선택 가능 · 파일당 100MB · 최대 20개 / 500MB</p><label class="secondary" for="fileInput">파일 선택</label><input id="fileInput" type="file" accept="application/pdf,.pdf" multiple /></div>
+        <p class="message" id="message" aria-live="polite"></p><button class="action" id="startButton" disabled>순차 번역 시작</button>
+        <div class="progress" id="progress" aria-live="polite"><div class="progress-title"><span id="progressLabel">준비 중</span><span id="progressPercent">0%</span></div><div class="bar"><div id="progressBar"></div></div></div>
+      </section>
+      <section class="card result" id="result"><div class="result-head"><h2 id="resultTitle">번역 결과</h2><button class="secondary" id="currentSave" type="button">PDF 저장</button></div><div class="translation" id="translation"></div></section>
+    </main>
+    <aside class="card queue-panel">
+      <div class="queue-head"><h2>작업 목록</h2><span class="muted" id="queueCount">0/20</span></div><div class="queue-summary"><span id="queueSize">0 MB</span><span id="queueDone">완료 0</span></div>
+      <div class="queue-actions"><button class="mini" id="pauseButton" disabled>일시정지</button><button class="mini" id="cancelButton" disabled>전체 취소</button><button class="mini" id="zipButton" disabled>전체 ZIP 저장</button><button class="mini" id="clearButton" disabled>목록 비우기</button></div>
+      <div class="queue-list" id="queueList"><div class="empty">등록된 PDF가 없습니다.</div></div>
+    </aside>
+  </div>
+  <footer>© 2026 박재윤. All rights reserved.</footer><script type="module" src="./assets/app.js"></script>
 </body>
 </html>

@@ -1,235 +1,219 @@
 import { extractPdfText, splitReferences } from './pdf-text.js';
 import { translateDocument } from './translator.js';
+import { terminateOcr } from './ocr.js';
+import { createResultsZip, createTranslationPdf, downloadBlob } from './export.js';
+import { clearQueue, deleteItem, hasStorageFor, loadQueue, saveItem } from './queue-store.js';
 
 const MAX_FILE_BYTES = 100 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 500 * 1024 * 1024;
+const MAX_FILES = 20;
 const MAX_CHARS = 300000;
-
+const MAX_RETRIES = 2;
+const ACTIVE = new Set(['extract', 'ocr', 'glossary', 'draft', 'review', 'pdf']);
+const LABELS = { queued:'대기', extract:'텍스트 추출', ocr:'OCR', glossary:'용어집', draft:'1차 번역', review:'교차검증', pdf:'PDF 생성', completed:'완료', failed:'실패', cancelled:'취소' };
+const PHASE_RANGE = { extract:[0,15], ocr:[0,15], glossary:[15,25], draft:[25,70], review:[70,95], pdf:[95,100] };
 const $ = (id) => document.getElementById(id);
-const el = {
-  fileInput: $('fileInput'), dropzone: $('dropzone'), fileInfo: $('fileInfo'),
-  fileName: $('fileName'), fileSize: $('fileSize'), message: $('message'),
-  button: $('translateButton'), progress: $('progress'), label: $('progressLabel'),
-  percent: $('progressPercent'), bar: $('progressBar'), result: $('result'),
-  resultTitle: $('resultTitle'), translation: $('translation'),
-  glossaryBox: $('glossaryBox'), glossaryBody: $('glossaryBody'),
-  refsBox: $('refsBox'), refsBody: $('refsBody'),
-  copy: $('copyButton'), download: $('downloadButton'), print: $('printButton'),
-};
+const el = { input:$('fileInput'), drop:$('dropzone'), message:$('message'), start:$('startButton'), pause:$('pauseButton'), cancel:$('cancelButton'), zip:$('zipButton'), clear:$('clearButton'), list:$('queueList'), count:$('queueCount'), size:$('queueSize'), done:$('queueDone'), progress:$('progress'), label:$('progressLabel'), percent:$('progressPercent'), bar:$('progressBar'), result:$('result'), resultTitle:$('resultTitle'), translation:$('translation'), currentSave:$('currentSave') };
 
-let selectedFile = null;
+let queue = [];
+let running = false;
+let paused = false;
 let controller = null;
-let currentPhase = 'extract';
-let output = { translation: '', references: '', name: 'translation' };
+let currentId = null;
+let previewId = null;
+const discardedIds = new Set();
 
-// Each phase owns a slice of the bar so the percentage never jumps backwards.
-const PHASES = {
-  extract:  { label: 'PDF에서 텍스트를 추출하는 중', from: 0,  to: 15 },
-  glossary: { label: '핵심 용어집을 만드는 중',      from: 15, to: 25 },
-  draft:    { label: 'AI가 1차 번역하는 중',         from: 25, to: 70 },
-  review:   { label: 'AI가 교차검증하는 중',         from: 70, to: 99 },
-};
-const ORDER = Object.keys(PHASES);
+const escapeHtml = (text) => String(text).replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const baseName = (name) => name.replace(/\.pdf$/i, '');
+const formatSize = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+const totalBytes = () => queue.reduce((sum, item) => sum + (item.size || 0), 0);
+const itemById = (id) => queue.find((item) => item.id === id);
 
-function setMessage(text, kind) {
-  el.message.textContent = text;
-  el.message.classList.toggle('ok', kind === 'ok');
-}
+function setMessage(text, kind = '') { el.message.textContent = text; el.message.classList.toggle('ok', kind === 'ok'); }
 
-function setPhase(phase, done = 0, total = 1, detail = '') {
-  const meta = PHASES[phase];
-  if (!meta) return;
-  currentPhase = phase;
-  const ratio = total > 0 ? Math.min(1, done / total) : 0;
-  const percent = Math.round(meta.from + (meta.to - meta.from) * ratio);
-  el.label.textContent = meta.label;
-  el.percent.textContent = `${percent}%`;
-  el.bar.style.width = `${percent}%`;
-
-  const index = ORDER.indexOf(phase);
-  document.querySelectorAll('.step').forEach((step) => {
-    const at = ORDER.indexOf(step.dataset.step);
-    step.classList.toggle('active', at === index);
-    step.classList.toggle('done', at < index);
-  });
-  const slot = document.querySelector(`[data-detail="${phase}"]`);
-  if (slot) slot.textContent = detail;
-}
-
-function finishProgress() {
-  el.label.textContent = '번역이 완료되었습니다';
-  el.percent.textContent = '100%';
-  el.bar.style.width = '100%';
-  document.querySelectorAll('.step').forEach((s) => { s.classList.remove('active'); s.classList.add('done'); });
-}
-
-function formatSize(bytes) {
-  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
-}
-
-function selectFile(file) {
-  setMessage('');
-  selectedFile = null;
-  el.button.disabled = true;
-  el.fileInfo.classList.remove('show');
-  if (!file) return;
-  if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-    setMessage('PDF 파일만 업로드할 수 있습니다.');
-    return;
-  }
-  if (file.size > MAX_FILE_BYTES) {
-    setMessage('파일 크기는 최대 100MB까지 가능합니다.');
-    return;
-  }
-  selectedFile = file;
-  el.fileName.textContent = file.name;
-  el.fileSize.textContent = formatSize(file.size);
-  el.fileInfo.classList.add('show');
-  el.button.disabled = false;
-}
-
-const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => (
-  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-));
-
-// The model returns Markdown limited to '## ' headings and blank-line paragraphs,
-// so a full Markdown parser would be dead weight here.
 function renderMarkdown(markdown) {
-  return markdown
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => (block.startsWith('## ')
-      ? `<h3>${escapeHtml(block.slice(3).trim())}</h3>`
-      : `<p>${escapeHtml(block)}</p>`))
-    .join('');
+  return String(markdown).split(/\n{2,}/).map((block) => block.trim()).filter(Boolean)
+    .map((block) => block.startsWith('## ') ? `<h3>${escapeHtml(block.slice(3))}</h3>` : `<p>${escapeHtml(block)}</p>`).join('');
 }
 
-function showResult(result, baseName) {
-  output = { translation: result.translation, references: result.references, name: baseName };
-  el.translation.innerHTML = renderMarkdown(result.translation);
+function phaseProgress(phase, done = 0, total = 1) {
+  const [from, to] = PHASE_RANGE[phase] || [0, 0];
+  return Math.round(from + (to - from) * Math.min(1, total ? done / total : 0));
+}
 
-  if (result.glossary?.length) {
-    el.glossaryBody.innerHTML = result.glossary
-      .map((t) => `<tr><td>${escapeHtml(t.en)}</td><td>${escapeHtml(t.ko)}</td></tr>`)
-      .join('');
-    el.glossaryBox.hidden = false;
-  } else {
-    el.glossaryBox.hidden = true;
+function render() {
+  el.count.textContent = `${queue.length}/${MAX_FILES}`;
+  el.size.textContent = `${(totalBytes() / 1024 / 1024).toFixed(1)} / 500 MB`;
+  el.done.textContent = `완료 ${queue.filter((i) => i.status === 'completed').length}`;
+  el.start.disabled = !queue.some((i) => i.status === 'queued') || running;
+  el.pause.disabled = !running;
+  el.pause.textContent = paused ? '계속 실행' : '일시정지';
+  el.cancel.disabled = !running && !queue.some((i) => i.status === 'queued');
+  el.zip.disabled = !queue.some((i) => i.pdfBlob);
+  el.clear.disabled = !queue.length;
+  if (!queue.length) { el.list.innerHTML = '<div class="empty">등록된 PDF가 없습니다.</div>'; return; }
+  el.list.innerHTML = queue.map((item) => {
+    const tools = [];
+    if (item.pdfBlob) tools.push(`<button class="mini" data-action="save" data-id="${item.id}">PDF 저장</button>`);
+    if (item.status === 'failed' || item.status === 'cancelled') tools.push(`<button class="mini" data-action="retry" data-id="${item.id}">재시도</button>`);
+    tools.push(`<button class="mini" data-action="delete" data-id="${item.id}">삭제</button>`);
+    return `<article class="queue-item ${ACTIVE.has(item.status) ? 'active' : ''} ${item.status === 'failed' ? 'failed' : ''}">
+      <div class="item-top"><span class="item-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span><span class="item-status">${LABELS[item.status] || item.status}${item.attempt ? ` · ${item.attempt}차` : ''}</span></div>
+      <div class="item-bar"><div style="width:${item.progress || 0}%"></div></div>
+      ${item.error ? `<div class="item-error">${escapeHtml(item.error)}</div>` : ''}<div class="item-tools">${tools.join('')}</div></article>`;
+  }).join('');
+}
+
+async function persist(item) {
+  if (discardedIds.has(item.id)) return;
+  try { await saveItem(item); }
+  catch (error) { setMessage(`브라우저 저장 공간에 작업을 보존하지 못했습니다: ${error.message}`); }
+}
+
+async function addFiles(fileList) {
+  const files = [...fileList];
+  const messages = [];
+  for (const file of files) {
+    if (queue.length >= MAX_FILES) { messages.push('파일은 최대 20개까지 등록할 수 있습니다.'); break; }
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { messages.push(`${file.name}: PDF만 등록할 수 있습니다.`); continue; }
+    if (file.size > MAX_FILE_BYTES) { messages.push(`${file.name}: 100MB를 초과합니다.`); continue; }
+    if (totalBytes() + file.size > MAX_TOTAL_BYTES) { messages.push(`${file.name}: 전체 500MB 제한을 초과합니다.`); continue; }
+    if (!(await hasStorageFor(file.size))) { messages.push(`${file.name}: 브라우저 저장 공간이 부족합니다.`); continue; }
+    const item = { id: crypto.randomUUID(), order: Date.now() + queue.length, name:file.name, size:file.size, file, status:'queued', phase:'queued', progress:0, attempt:0, error:'', pdfBlob:null, outputName:`${baseName(file.name)}-ko.pdf`, pageMeta:[], warnings:[] };
+    queue.push(item);
+    await persist(item);
   }
-
-  if (result.references) {
-    el.refsBody.textContent = result.references;
-    el.refsBox.hidden = false;
-  } else {
-    el.refsBox.hidden = true;
-  }
-
-  el.result.classList.add('show');
-  el.result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setMessage(messages.join(' '), messages.length ? '' : 'ok');
+  render();
+  el.input.value = '';
 }
 
-function markdownFile() {
-  const parts = [`# ${output.name}`, '', output.translation];
-  if (output.references) parts.push('', '## References (원문)', '', output.references);
-  return parts.join('\n');
+async function updateItem(item, changes, save = true) {
+  Object.assign(item, changes);
+  render();
+  if (save) await persist(item);
 }
 
-function download(filename, contents) {
-  const url = URL.createObjectURL(new Blob([contents], { type: 'text/markdown;charset=utf-8' }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function run() {
-  if (!selectedFile) return;
-  const baseName = selectedFile.name.replace(/\.pdf$/i, '');
-
+async function processFile(item) {
   controller = new AbortController();
-  el.button.textContent = '취소';
-  el.progress.classList.add('show');
-  el.result.classList.remove('show');
-  setMessage('');
-  setPhase('extract', 0, 1);
-
+  currentId = item.id;
+  let currentPhase = 'extract';
+  await updateItem(item, { status:'extract', phase:'extract', progress:0, error:'', attempt:item.attempt + 1 });
+  const showProgress = (phase, done = 0, total = 1, detail = '') => {
+    currentPhase = phase;
+    item.status = phase;
+    item.phase = phase;
+    item.progress = phaseProgress(phase, done, total);
+    el.progress.classList.add('show');
+    el.label.textContent = `${item.name} · ${LABELS[phase]}${detail ? ` · ${detail}` : ''}`;
+    el.percent.textContent = `${item.progress}%`;
+    el.bar.style.width = `${item.progress}%`;
+    render();
+  };
   try {
-    const buffer = await selectedFile.arrayBuffer();
-    const extracted = await extractPdfText(buffer, (page, total) => {
-      setPhase('extract', page, total, `${page}/${total} 페이지`);
+    const extracted = await extractPdfText(await item.file.arrayBuffer(), {
+      signal:controller.signal,
+      onPhase:(phase) => showProgress(phase, 0, 1),
+      onProgress:(done, total, meta) => showProgress(meta?.source === 'ocr' ? 'ocr' : currentPhase, done, total, `${Math.min(total, Math.ceil(done))}/${total}페이지`),
     });
-
-    if (extracted.chars < 200) {
-      throw new Error('텍스트를 추출할 수 없는 PDF입니다. 스캔한 이미지 PDF는 아직 지원하지 않습니다.');
-    }
-    if (extracted.chars > MAX_CHARS) {
-      throw new Error(`본문이 너무 깁니다. (${extracted.chars.toLocaleString()}자 / 최대 ${MAX_CHARS.toLocaleString()}자) 장을 나눠 올려주세요.`);
-    }
-
+    if (extracted.chars < 200) throw new Error('텍스트와 OCR 결과가 200자 미만입니다. 스캔 품질을 확인해주세요.');
+    if (extracted.chars > MAX_CHARS) throw new Error(`본문이 최대 ${MAX_CHARS.toLocaleString()}자를 초과합니다.`);
+    item.pageMeta = extracted.pageMeta;
+    item.warnings = extracted.warnings;
     const document_ = splitReferences(extracted.text);
-    setPhase('extract', 1, 1, `${extracted.pages}페이지 · ${extracted.chars.toLocaleString()}자`);
-
     const result = await translateDocument(document_, {
-      signal: controller.signal,
-      onPhase: (phase) => setPhase(phase, 0, 1),
-      onProgress: (done, total) => setPhase(currentPhase, done, total, `${done}/${total} 구간`),
-      onPartial: (partial) => {
-        el.translation.innerHTML = renderMarkdown(partial);
-        el.result.classList.add('show');
-      },
+      signal:controller.signal,
+      onPhase:(phase) => showProgress(phase, 0, 1),
+      onProgress:(done, total) => showProgress(currentPhase, done, total, `${done}/${total}구간`),
+      onPartial:(partial) => { previewId = item.id; el.result.classList.add('show'); el.resultTitle.textContent = `${baseName(item.name)} · 번역 중`; el.translation.innerHTML = renderMarkdown(partial); },
     });
-
-    finishProgress();
-    showResult(result, baseName);
-    const seconds = Math.round(result.elapsedMs / 1000);
-    const note = result.skippedReview
-      ? ` ${result.skippedReview}개 구간은 교차검증을 건너뛰고 1차 번역을 사용했습니다.`
-      : '';
-    setMessage(`${result.chunks}개 구간을 번역하고 교차검증했습니다. (${seconds}초)${note}`, 'ok');
-    el.resultTitle.textContent = `${baseName} · 번역 결과`;
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      setMessage('번역을 취소했습니다.');
-    } else {
-      setMessage(error.message || '번역 중 오류가 발생했습니다.');
-    }
-    el.progress.classList.remove('show');
+    showProgress('pdf', 0, 1);
+    const pdfBlob = await createTranslationPdf({ title:baseName(item.name), translation:result.translation });
+    item.pdfBlob = pdfBlob;
+    await updateItem(item, { status:'completed', phase:'completed', progress:100, error:'' });
+    previewId = item.id;
+    el.result.classList.add('show'); el.resultTitle.textContent = `${baseName(item.name)} · 번역 결과`; el.translation.innerHTML = renderMarkdown(result.translation);
+    downloadBlob(item.outputName, pdfBlob);
+    setMessage(`${item.name} 번역과 PDF 생성을 완료했습니다. 자동 저장이 보이지 않으면 작업 목록의 PDF 저장을 누르세요.`, 'ok');
   } finally {
     controller = null;
-    el.button.textContent = '번역 시작하기';
-    el.button.disabled = !selectedFile;
+    currentId = null;
   }
 }
 
-el.fileInput.addEventListener('change', (e) => selectFile(e.target.files[0]));
-['dragenter', 'dragover'].forEach((type) => el.dropzone.addEventListener(type, (e) => {
-  e.preventDefault();
-  el.dropzone.classList.add('dragover');
-}));
-['dragleave', 'drop'].forEach((type) => el.dropzone.addEventListener(type, (e) => {
-  e.preventDefault();
-  el.dropzone.classList.remove('dragover');
-}));
-el.dropzone.addEventListener('drop', (e) => selectFile(e.dataTransfer.files[0]));
-
-el.button.addEventListener('click', () => {
-  if (controller) {
-    controller.abort();
-    return;
-  }
-  run();
-});
-
-el.copy.addEventListener('click', async () => {
+async function runQueue() {
+  if (running) { paused = false; render(); return; }
+  running = true; paused = false; render();
   try {
-    await navigator.clipboard.writeText(output.translation);
-    setMessage('번역문을 클립보드에 복사했습니다.', 'ok');
-  } catch {
-    setMessage('클립보드 복사에 실패했습니다. 직접 선택해 복사해주세요.');
+    while (!paused) {
+      const item = queue.find((candidate) => candidate.status === 'queued');
+      if (!item) break;
+      let complete = false;
+      while (!complete && item.attempt <= MAX_RETRIES) {
+        try { await processFile(item); complete = true; }
+        catch (error) {
+          if (error.name === 'AbortError') { await updateItem(item, { status:'cancelled', phase:'cancelled', error:'작업을 취소했습니다.' }); complete = true; }
+          else if (error.fatal || item.attempt > MAX_RETRIES) { await updateItem(item, { status:'failed', phase:'failed', error:error.message || '처리 중 오류가 발생했습니다.' }); complete = true; }
+          else { await updateItem(item, { status:'queued', phase:'queued', progress:0, error:`일시적 오류로 재시도합니다: ${error.message}` }); }
+        }
+      }
+    }
+  } finally {
+    running = false;
+    await terminateOcr();
+    if (!queue.some((i) => ACTIVE.has(i.status))) el.progress.classList.remove('show');
+    render();
   }
+}
+
+async function cancelAll() {
+  controller?.abort();
+  for (const item of queue.filter((i) => i.status === 'queued')) await updateItem(item, { status:'cancelled', phase:'cancelled', error:'전체 작업을 취소했습니다.' });
+}
+
+async function removeItem(id) {
+  discardedIds.add(id);
+  if (currentId === id) controller?.abort();
+  queue = queue.filter((item) => item.id !== id);
+  await deleteItem(id);
+  if (previewId === id) { previewId = null; el.result.classList.remove('show'); }
+  render();
+}
+
+el.input.addEventListener('change', (event) => addFiles(event.target.files));
+['dragenter','dragover'].forEach((type) => el.drop.addEventListener(type, (event) => { event.preventDefault(); el.drop.classList.add('dragover'); }));
+['dragleave','drop'].forEach((type) => el.drop.addEventListener(type, (event) => { event.preventDefault(); el.drop.classList.remove('dragover'); }));
+el.drop.addEventListener('drop', (event) => addFiles(event.dataTransfer.files));
+el.start.addEventListener('click', () => runQueue());
+el.pause.addEventListener('click', () => { paused = !paused; if (!paused && !running) runQueue(); render(); });
+el.cancel.addEventListener('click', cancelAll);
+el.clear.addEventListener('click', async () => {
+  queue.forEach((item) => discardedIds.add(item.id));
+  controller?.abort(); queue = []; await clearQueue(); previewId = null; el.result.classList.remove('show'); render();
 });
-el.download.addEventListener('click', () => download(`${output.name}-ko.md`, markdownFile()));
-el.print.addEventListener('click', () => window.print());
+el.zip.addEventListener('click', async () => {
+  const completed = queue.filter((item) => item.pdfBlob);
+  if (!completed.length) return;
+  setMessage('완료된 PDF를 ZIP으로 묶는 중입니다.');
+  const blob = await createResultsZip(completed);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  downloadBlob(`${stamp}-paperflow-translations.zip`, blob);
+  setMessage(`${completed.length}개 PDF를 ZIP으로 만들었습니다.`, 'ok');
+});
+el.currentSave.addEventListener('click', () => { const item = itemById(previewId); if (item?.pdfBlob) downloadBlob(item.outputName, item.pdfBlob); });
+el.list.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-action]'); if (!button) return;
+  const item = itemById(button.dataset.id); if (!item) return;
+  if (button.dataset.action === 'save' && item.pdfBlob) downloadBlob(item.outputName, item.pdfBlob);
+  if (button.dataset.action === 'retry') { await updateItem(item, { status:'queued', phase:'queued', progress:0, attempt:0, error:'' }); }
+  if (button.dataset.action === 'delete') await removeItem(item.id);
+});
+
+(async () => {
+  try {
+    queue = await loadQueue();
+    for (const item of queue.filter((i) => i.recovered)) { delete item.recovered; await persist(item); }
+    if (queue.length) setMessage('이전 작업 목록을 복구했습니다. 미완료 파일은 다시 시작할 수 있습니다.', 'ok');
+  } catch (error) { setMessage(`작업 목록을 복구하지 못했습니다: ${error.message}`); }
+  render();
+})();

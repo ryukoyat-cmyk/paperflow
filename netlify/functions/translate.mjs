@@ -250,21 +250,18 @@ export default async (request) => {
 
       let terminalEventSeen = false;
       const handleEvent = (raw) => {
-        const lines = raw.replace(/\\r/g, '').split('\\n');
+        const lines = raw.replace(/\r/g, '').split('\n');
         const dataLines = lines.filter((line) => line.startsWith('data:'));
         if (!dataLines.length) return;
-        const data = dataLines.map((line) => line.slice(5).trim()).join('\\n');
+        const data = dataLines.map((line) => line.slice(5).trim()).join('\n');
         if (!data || data === '[DONE]') return;
-
         let event;
-        try {
-          event = JSON.parse(data);
-        } catch {
+        try { event = JSON.parse(data); }
+        catch {
           send({ type: 'error', message: 'OpenAI 스트림 이벤트를 해석하지 못했습니다.' });
           terminalEventSeen = true;
           return;
         }
-
         switch (event.type) {
           case 'response.output_text.delta':
             if (typeof event.delta === 'string' && event.delta.length) {
@@ -284,14 +281,14 @@ export default async (request) => {
             if (!produced) {
               const content = (response.output || []).flatMap((item) => item.content || []);
               const refusal = content.find((item) => item.type === 'refusal' && item.refusal);
-              const fallback = content
-                .filter((item) => item.type === 'output_text' && typeof item.text === 'string')
-                .map((item) => item.text).join('');
+              const fallback = content.filter((item) => item.type === 'output_text' && typeof item.text === 'string').map((item) => item.text).join('');
               if (fallback) {
                 produced += fallback.length;
                 send({ type: 'delta', text: fallback });
               } else if (refusal) {
-                send({ type: 'error', message: `모델이 요청을 거부했습니다: ${refusal.refusal}` });
+                send({ type: 'error', message: '모델이 요청을 거부했습니다: ' + refusal.refusal });
+              } else {
+                send({ type: 'error', message: '모델 응답은 완료됐지만 출력 텍스트가 없습니다. (상태: ' + (response.status || 'unknown') + ')' });
               }
             }
             send({ type: 'done', usage: response.usage ?? null });
@@ -304,7 +301,7 @@ export default async (request) => {
               code: event.response?.incomplete_details?.reason === 'max_output_tokens' ? 'truncated' : 'incomplete',
               message: event.response?.incomplete_details?.reason === 'max_output_tokens'
                 ? '출력 토큰 한도로 응답이 중단되었습니다.'
-                : `모델 응답이 완료되지 않았습니다. (사유: ${event.response?.incomplete_details?.reason || '알 수 없음'})`,
+                : '모델 응답이 완료되지 않았습니다. (사유: ' + (event.response?.incomplete_details?.reason || '알 수 없음') + ')',
             });
             break;
           case 'response.failed':
@@ -324,19 +321,17 @@ export default async (request) => {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          let boundary = buffer.indexOf('\n\n');
-          while (boundary !== -1) {
-            handleEvent(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + (buffer.startsWith('\\r\\n\\r\\n', boundary) ? 4 : 2));
-            boundary = buffer.indexOf('\n\n');
+          let match = /\r?\n\r?\n/.exec(buffer);
+          while (match) {
+            handleEvent(buffer.slice(0, match.index));
+            buffer = buffer.slice(match.index + match[0].length);
+            match = /\r?\n\r?\n/.exec(buffer);
           }
         }
         buffer += decoder.decode();
         if (buffer.trim()) handleEvent(buffer);
         if (!produced && !terminalEventSeen) {
           send({ type: 'error', message: 'OpenAI 스트림이 완료 이벤트 없이 종료되어 번역 텍스트를 받지 못했습니다.' });
-        } else if (!produced && terminalEventSeen) {
-          // Terminal event handlers already sent the specific failure or refusal reason.
         }
       } catch (error) {
         send({ type: 'error', message: error.message || '스트리밍이 중단되었습니다.' });

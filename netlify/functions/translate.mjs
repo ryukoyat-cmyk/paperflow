@@ -249,17 +249,29 @@ export default async (request) => {
       let produced = 0;
 
       let terminalEventSeen = false;
-      const handleEvent = (raw) => {
-        const lines = raw.replace(/\r/g, '').split('\n');
-        const dataLines = lines.filter((line) => line.startsWith('data:'));
-        if (!dataLines.length) return;
-        const data = dataLines.map((line) => line.slice(5).trim()).join('\n');
-        if (!data || data === '[DONE]') return;
-        let event;
-        try { event = JSON.parse(data); }
-        catch {
-          send({ type: 'error', message: 'OpenAI 스트림 이벤트를 해석하지 못했습니다.' });
-          terminalEventSeen = true;
+      const handleParsedEvent = (event) => {
+        if (!event || typeof event !== 'object') return;
+        if (typeof event.type !== 'string') {
+          // Some upstream/proxy responses return the completed Response object
+          // as JSON even when streaming was requested.
+          const response = event.response || event;
+          if (typeof response.output_text === 'string' && response.output_text) {
+            produced += response.output_text.length;
+            send({ type: 'delta', text: response.output_text });
+            terminalEventSeen = true;
+            send({ type: 'done', usage: response.usage ?? null });
+            return;
+          }
+          if (Array.isArray(response.output)) {
+            handleParsedEvent({ type: 'response.completed', response });
+            return;
+          }
+          if (response.status === 'incomplete' || response.status === 'failed') {
+            terminalEventSeen = true;
+            const reason = response.incomplete_details?.reason;
+            send({ type: 'error', code: reason === 'max_output_tokens' ? 'truncated' : 'incomplete', message: response.error?.message || response.message || ('모델 응답 상태: ' + response.status + (reason ? ' (' + reason + ')' : '')) });
+            return;
+          }
           return;
         }
         switch (event.type) {
@@ -281,7 +293,9 @@ export default async (request) => {
             if (!produced) {
               const content = (response.output || []).flatMap((item) => item.content || []);
               const refusal = content.find((item) => item.type === 'refusal' && item.refusal);
-              const fallback = content.filter((item) => item.type === 'output_text' && typeof item.text === 'string').map((item) => item.text).join('');
+              const fallback = typeof response.output_text === 'string' && response.output_text
+                ? response.output_text
+                : content.filter((item) => item.type === 'output_text' && typeof item.text === 'string').map((item) => item.text).join('');
               if (fallback) {
                 produced += fallback.length;
                 send({ type: 'delta', text: fallback });
@@ -315,6 +329,20 @@ export default async (request) => {
           default:
             break;
         }
+      };
+      const handleEvent = (raw) => {
+        const lines = raw.replace(/\r/g, '').split('\n');
+        const dataLines = lines.filter((line) => line.startsWith('data:'));
+        const data = dataLines.length ? dataLines.map((line) => line.slice(5).trim()).join('\n') : raw.trim();
+        if (!data || data === '[DONE]') return;
+        let event;
+        try { event = JSON.parse(data); }
+        catch {
+          send({ type: 'error', message: 'OpenAI 응답 형식을 해석하지 못했습니다.' });
+          terminalEventSeen = true;
+          return;
+        }
+        handleParsedEvent(event);
       };
       try {
         for (;;) {

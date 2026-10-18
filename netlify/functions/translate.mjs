@@ -249,47 +249,44 @@ export default async (request) => {
       let produced = 0;
 
       const handleEvent = (raw) => {
-        const dataLines = raw.split('\n').filter((l) => l.startsWith('data:'));
+        const lines = raw.replace(/\r/g, '').split('\n');
+        const dataLines = lines.filter((line) => line.startsWith('data:'));
         if (!dataLines.length) return;
-        const data = dataLines.map((l) => l.slice(5).trim()).join('');
+        const data = dataLines.map((line) => line.slice(5).trim()).join('');
         if (!data || data === '[DONE]') return;
         let event;
-        try {
-          event = JSON.parse(data);
-        } catch {
-          return;
-        }
+        try { event = JSON.parse(data); } catch { return; }
         switch (event.type) {
           case 'response.output_text.delta':
-            if (event.delta) {
-              produced += event.delta.length;
-              send({ type: 'delta', text: event.delta });
-            }
+            if (event.delta) { produced += event.delta.length; send({ type: 'delta', text: event.delta }); }
             break;
-          case 'response.completed':
+          case 'response.output_text.done':
+            if (!produced && event.text) { produced += event.text.length; send({ type: 'delta', text: event.text }); }
+            break;
+          case 'response.completed': {
+            const output = event.response?.output || [];
+            if (!produced) {
+              const fallback = output.flatMap((item) => item.content || [])
+                .filter((item) => item.type === 'output_text' && item.text)
+                .map((item) => item.text).join('');
+              if (fallback) { produced += fallback.length; send({ type: 'delta', text: fallback }); }
+            }
             send({ type: 'done', usage: event.response?.usage ?? null });
             break;
+          }
           case 'response.incomplete':
-            // Reasoning tokens count toward max_output_tokens, so a long chunk can
-            // run out mid-sentence. Tell the client to split and retry instead of
-            // silently returning a truncated translation.
-            send({
-              type: 'error',
-              code: event.response?.incomplete_details?.reason === 'max_output_tokens' ? 'truncated' : 'incomplete',
-              message: '응답이 완결되지 않았습니다.',
-            });
+            send({ type: 'error', code: event.response?.incomplete_details?.reason === 'max_output_tokens' ? 'truncated' : 'incomplete', message: event.response?.incomplete_details?.reason === 'max_output_tokens' ? '출력 토큰 한도로 응답이 중단되었습니다.' : '모델 응답이 완결되지 않았습니다.' });
             break;
           case 'response.failed':
             send({ type: 'error', message: event.response?.error?.message || '모델 응답이 실패했습니다.' });
             break;
           case 'error':
-            send({ type: 'error', message: event.message || '스트리밍 중 오류가 발생했습니다.' });
+            send({ type: 'error', message: event.message || event.error?.message || '스트리밍 중 오류가 발생했습니다.' });
             break;
           default:
             break;
         }
       };
-
       try {
         for (;;) {
           const { done, value } = await reader.read();
@@ -298,12 +295,12 @@ export default async (request) => {
           let boundary = buffer.indexOf('\n\n');
           while (boundary !== -1) {
             handleEvent(buffer.slice(0, boundary));
-            buffer = buffer.slice(boundary + 2);
+            buffer = buffer.slice(boundary + (buffer.startsWith('\\r\\n\\r\\n', boundary) ? 4 : 2));
             boundary = buffer.indexOf('\n\n');
           }
         }
         if (buffer.trim()) handleEvent(buffer);
-        if (!produced) send({ type: 'error', message: '모델이 빈 응답을 반환했습니다.' });
+        if (!produced) send({ type: 'error', message: '모델 응답에서 번역 텍스트를 찾지 못했습니다. 응답 상태와 모델 권한을 확인하세요.' });
       } catch (error) {
         send({ type: 'error', message: error.message || '스트리밍이 중단되었습니다.' });
       } finally {

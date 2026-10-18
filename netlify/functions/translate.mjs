@@ -248,40 +248,72 @@ export default async (request) => {
       let buffer = '';
       let produced = 0;
 
+      let terminalEventSeen = false;
       const handleEvent = (raw) => {
-        const lines = raw.replace(/\r/g, '').split('\n');
+        const lines = raw.replace(/\\r/g, '').split('\\n');
         const dataLines = lines.filter((line) => line.startsWith('data:'));
         if (!dataLines.length) return;
-        const data = dataLines.map((line) => line.slice(5).trim()).join('');
+        const data = dataLines.map((line) => line.slice(5).trim()).join('\\n');
         if (!data || data === '[DONE]') return;
+
         let event;
-        try { event = JSON.parse(data); } catch { return; }
+        try {
+          event = JSON.parse(data);
+        } catch {
+          send({ type: 'error', message: 'OpenAI 스트림 이벤트를 해석하지 못했습니다.' });
+          terminalEventSeen = true;
+          return;
+        }
+
         switch (event.type) {
           case 'response.output_text.delta':
-            if (event.delta) { produced += event.delta.length; send({ type: 'delta', text: event.delta }); }
+            if (typeof event.delta === 'string' && event.delta.length) {
+              produced += event.delta.length;
+              send({ type: 'delta', text: event.delta });
+            }
             break;
           case 'response.output_text.done':
-            if (!produced && event.text) { produced += event.text.length; send({ type: 'delta', text: event.text }); }
+            if (!produced && typeof event.text === 'string' && event.text.length) {
+              produced += event.text.length;
+              send({ type: 'delta', text: event.text });
+            }
             break;
           case 'response.completed': {
-            const output = event.response?.output || [];
+            terminalEventSeen = true;
+            const response = event.response || {};
             if (!produced) {
-              const fallback = output.flatMap((item) => item.content || [])
-                .filter((item) => item.type === 'output_text' && item.text)
+              const content = (response.output || []).flatMap((item) => item.content || []);
+              const refusal = content.find((item) => item.type === 'refusal' && item.refusal);
+              const fallback = content
+                .filter((item) => item.type === 'output_text' && typeof item.text === 'string')
                 .map((item) => item.text).join('');
-              if (fallback) { produced += fallback.length; send({ type: 'delta', text: fallback }); }
+              if (fallback) {
+                produced += fallback.length;
+                send({ type: 'delta', text: fallback });
+              } else if (refusal) {
+                send({ type: 'error', message: `모델이 요청을 거부했습니다: ${refusal.refusal}` });
+              }
             }
-            send({ type: 'done', usage: event.response?.usage ?? null });
+            send({ type: 'done', usage: response.usage ?? null });
             break;
           }
           case 'response.incomplete':
-            send({ type: 'error', code: event.response?.incomplete_details?.reason === 'max_output_tokens' ? 'truncated' : 'incomplete', message: event.response?.incomplete_details?.reason === 'max_output_tokens' ? '출력 토큰 한도로 응답이 중단되었습니다.' : '모델 응답이 완결되지 않았습니다.' });
+            terminalEventSeen = true;
+            send({
+              type: 'error',
+              code: event.response?.incomplete_details?.reason === 'max_output_tokens' ? 'truncated' : 'incomplete',
+              message: event.response?.incomplete_details?.reason === 'max_output_tokens'
+                ? '출력 토큰 한도로 응답이 중단되었습니다.'
+                : `모델 응답이 완료되지 않았습니다. (사유: ${event.response?.incomplete_details?.reason || '알 수 없음'})`,
+            });
             break;
           case 'response.failed':
+            terminalEventSeen = true;
             send({ type: 'error', message: event.response?.error?.message || '모델 응답이 실패했습니다.' });
             break;
           case 'error':
-            send({ type: 'error', message: event.message || event.error?.message || '스트리밍 중 오류가 발생했습니다.' });
+            terminalEventSeen = true;
+            send({ type: 'error', message: event.message || event.error?.message || 'OpenAI 스트림 오류가 발생했습니다.' });
             break;
           default:
             break;
@@ -299,8 +331,13 @@ export default async (request) => {
             boundary = buffer.indexOf('\n\n');
           }
         }
+        buffer += decoder.decode();
         if (buffer.trim()) handleEvent(buffer);
-        if (!produced) send({ type: 'error', message: '모델 응답에서 번역 텍스트를 찾지 못했습니다. 응답 상태와 모델 권한을 확인하세요.' });
+        if (!produced && !terminalEventSeen) {
+          send({ type: 'error', message: 'OpenAI 스트림이 완료 이벤트 없이 종료되어 번역 텍스트를 받지 못했습니다.' });
+        } else if (!produced && terminalEventSeen) {
+          // Terminal event handlers already sent the specific failure or refusal reason.
+        }
       } catch (error) {
         send({ type: 'error', message: error.message || '스트리밍이 중단되었습니다.' });
       } finally {

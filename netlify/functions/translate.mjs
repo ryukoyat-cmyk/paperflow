@@ -186,6 +186,13 @@ async function openStreamWithRetry(spec) {
   throw lastError;
 }
 
+function readableStreamError(message) {
+  if (/no credits remaining|insufficient_quota|credit balance|billing hard limit/i.test(message)) {
+    return 'OpenAI API 크레딧이 소진되었습니다. OpenAI Platform의 결제 잔액과 사용 한도를 확인하세요.';
+  }
+  return message || 'OpenAI 호출에 실패했습니다.';
+}
+
 function readableApiError(error) {
   try {
     const parsed = JSON.parse(error.detail);
@@ -248,7 +255,7 @@ export default async (request) => {
       let buffer = '';
       let produced = 0;
 
-      let terminalEventSeen = false;
+      let terminalEventSeen = false;\n      let terminalErrorSent = false;\n      const sendError = (message, code) => {\n        if (terminalErrorSent) return;\n        terminalErrorSent = true;\n        send({ type: 'error', message: readableStreamError(message), ...(code ? { code } : {}) });\n      };
       const handleParsedEvent = (event) => {
         if (!event || typeof event !== 'object') return;
         if (typeof event.type !== 'string') {
@@ -300,9 +307,9 @@ export default async (request) => {
                 produced += fallback.length;
                 send({ type: 'delta', text: fallback });
               } else if (refusal) {
-                send({ type: 'error', message: '모델이 요청을 거부했습니다: ' + refusal.refusal });
+                sendError('모델이 요청을 거부했습니다: ' + refusal.refusal);
               } else {
-                send({ type: 'error', message: '모델 응답은 완료됐지만 출력 텍스트가 없습니다. (상태: ' + (response.status || 'unknown') + ')' });
+                sendError('모델 응답은 완료됐지만 출력 텍스트가 없습니다. (상태: ' + (response.status || 'unknown') + ')');
               }
             }
             send({ type: 'done', usage: response.usage ?? null });
@@ -320,11 +327,11 @@ export default async (request) => {
             break;
           case 'response.failed':
             terminalEventSeen = true;
-            send({ type: 'error', message: event.response?.error?.message || '모델 응답이 실패했습니다.' });
+            sendError(event.response?.error?.message || '모델 응답이 실패했습니다.');
             break;
           case 'error':
             terminalEventSeen = true;
-            send({ type: 'error', message: event.message || event.error?.message || 'OpenAI 스트림 오류가 발생했습니다.' });
+            sendError(event.message || event.error?.message || 'OpenAI 스트림 오류가 발생했습니다.');
             break;
           default:
             break;
@@ -338,7 +345,7 @@ export default async (request) => {
         let event;
         try { event = JSON.parse(data); }
         catch {
-          send({ type: 'error', message: 'OpenAI 응답 형식을 해석하지 못했습니다.' });
+          sendError('OpenAI 응답 형식을 해석하지 못했습니다.');
           terminalEventSeen = true;
           return;
         }
@@ -359,10 +366,10 @@ export default async (request) => {
         buffer += decoder.decode();
         if (buffer.trim()) handleEvent(buffer);
         if (!produced && !terminalEventSeen) {
-          send({ type: 'error', message: 'OpenAI 스트림이 완료 이벤트 없이 종료되어 번역 텍스트를 받지 못했습니다.' });
+          sendError('OpenAI 스트림이 완료 이벤트 없이 종료되어 번역 텍스트를 받지 못했습니다.');
         }
       } catch (error) {
-        send({ type: 'error', message: error.message || '스트리밍이 중단되었습니다.' });
+        sendError(error.message || '스트리밍이 중단되었습니다.');
       } finally {
         controller.close();
       }

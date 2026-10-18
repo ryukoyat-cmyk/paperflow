@@ -6,7 +6,7 @@
   <title>논문이 술술, PaperFlow</title>
   <style>
     :root { color-scheme:light; --ink:#171717; --muted:#737373; --line:#e5e5e5; --soft:#fafafa; --ok:#16794f; --bad:#b42318; }
-    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:#fff; font-family:Pretendard,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; } button { font:inherit; }
+    * { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--ink); background:#fff; font-family:"Noto Sans KR",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; } button { font:inherit; }
     header { width:min(1240px,calc(100% - 40px)); margin:auto; padding:28px 0; display:flex; justify-content:space-between; align-items:center; }
     .brand { display:flex; gap:10px; align-items:center; font-weight:800; letter-spacing:-.04em; } .logo { width:30px; height:30px; display:grid; place-items:center; color:#fff; background:var(--ink); border-radius:9px; }
     .badge,.muted { color:var(--muted); } .layout { width:min(1240px,calc(100% - 40px)); margin:34px auto 80px; display:grid; grid-template-columns:minmax(0,760px) 380px; gap:28px; align-items:start; }
@@ -34,7 +34,7 @@
   <header><div class="brand"><div class="logo">P</div><span>논문이 술술, PaperFlow</span></div><div class="badge">English → 한국어</div></header>
   <div class="layout">
     <main>
-      <section class="intro"><h1>논문을 자연스러운 한국어로</h1><p>여러 PDF를 등록하면 한 파일씩 OCR·번역하고<br />Pretendard가 적용된 PDF로 자동 저장합니다.</p></section>
+      <section class="intro"><h1>논문을 자연스러운 한국어로</h1><p>여러 PDF를 등록하면 한 파일씩 OCR·번역하고<br />Noto Sans KR이 적용된 PDF로 자동 저장합니다.</p></section>
       <section class="card upload-card">
         <div class="dropzone" id="dropzone"><div class="upload-icon">↑</div><strong>PDF 논문을 업로드하세요</strong><p>여러 파일 선택 가능 · 파일당 100MB · 최대 20개 / 500MB</p><label class="secondary" for="fileInput">파일 선택</label><input id="fileInput" type="file" accept="application/pdf,.pdf" multiple /></div>
         <p class="message" id="message" aria-live="polite"></p><button class="action" id="startButton" disabled>순차 번역 시작</button>
